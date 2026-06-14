@@ -30,6 +30,7 @@ jobs:
 
 
 #               ----- release way -----
+#   update version in pom.xml as <version>1.0.0</version>
 #  git add .
 #  git commit -m "release 1.0.0"
 #  git tag v1.0.0
