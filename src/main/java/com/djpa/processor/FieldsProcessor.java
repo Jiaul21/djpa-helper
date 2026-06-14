@@ -1,9 +1,9 @@
 package com.djpa.processor;
 
-import com.djpa.annotations.GenerateFields;
-import com.djpa.annotations.FieldProperty;
 import com.google.auto.service.AutoService;
 import com.squareup.javapoet.*;
+import com.djpa.annotations.GenerateFields;
+import com.djpa.annotations.FieldProperty;
 
 import javax.annotation.processing.*;
 import javax.lang.model.SourceVersion;
@@ -14,9 +14,9 @@ import javax.tools.Diagnostic;
 import java.io.IOException;
 import java.util.*;
 
+@AutoService(Processor.class)
 @SupportedAnnotationTypes("com.djpa.annotations.GenerateFields")
 @SupportedSourceVersion(SourceVersion.RELEASE_17)
-@AutoService(Processor.class)
 public class FieldsProcessor extends AbstractProcessor {
 
     private Types typeUtils;
@@ -30,287 +30,242 @@ public class FieldsProcessor extends AbstractProcessor {
     @Override
     public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv) {
 
-        for (Element element : roundEnv.getElementsAnnotatedWith(GenerateFields.class)) {
-
-            if (!(element instanceof TypeElement typeElement)) continue;
+        for (Element e : roundEnv.getElementsAnnotatedWith(GenerateFields.class)) {
+            if (!(e instanceof TypeElement type)) continue;
 
             try {
-                generate(typeElement);
-            } catch (Exception e) {
+                generate(type);
+            } catch (Exception ex) {
                 processingEnv.getMessager().printMessage(
                         Diagnostic.Kind.ERROR,
-                        "Generation failed: " + e.getMessage()
+                        ex.toString()
                 );
             }
         }
         return true;
     }
 
-    // =========================
-    // MAIN GENERATION
-    // =========================
-    private void generate(TypeElement typeElement) throws IOException {
+    private void generate(TypeElement type) throws IOException {
 
-        String packageName = processingEnv.getElementUtils()
-                .getPackageOf(typeElement)
+        String pkg = processingEnv.getElementUtils()
+                .getPackageOf(type)
                 .getQualifiedName().toString();
 
-        String originalName = typeElement.getSimpleName().toString();
-        String generatedName = originalName + "Fields";
+        String className = type.getSimpleName() + "Fields";
 
-        boolean isRecord = typeElement.getKind() == ElementKind.RECORD;
-
-        TypeSpec.Builder clazz = TypeSpec.classBuilder(generatedName)
+        TypeSpec.Builder clazz = TypeSpec.classBuilder(className)
                 .addModifiers(Modifier.PUBLIC, Modifier.FINAL);
 
         clazz.addMethod(MethodSpec.constructorBuilder()
                 .addModifiers(Modifier.PRIVATE)
                 .build());
 
-        List<FieldInfo> fields = extractFields(typeElement, isRecord);
+        List<FieldMeta> fields = extractFields(type);
 
-        List<String> fieldNames = new ArrayList<>();
+        ClassName fieldProperty = ClassName.get(FieldProperty.class);
+
+        List<CodeBlock> fieldRefs = new ArrayList<>();
 
         // =========================
-        // STRING CONSTANTS + FIELD PROPERTIES
+        // FIELD CONSTANTS
         // =========================
-        for (FieldInfo f : fields) {
+        for (FieldMeta f : fields) {
 
-            // STRING constant name (ID, NAME, etc.)
-            String CONST = toConstName(f.name);
+            TypeName mainType = TypeName.get(f.type);
 
-            clazz.addField(FieldSpec.builder(String.class, CONST,
-                            Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL)
-                    .initializer("$S", f.name)
-                    .build());
-
-            // FieldProperty variable name (id, name)
-            String varName = f.name;
-
-            TypeName tType = TypeName.get(f.type);
-            TypeName eType = f.elementType != null
+            TypeName elemType = f.elementType != null
                     ? TypeName.get(f.elementType)
                     : ClassName.get(Void.class);
 
-            clazz.addField(FieldSpec.builder(
-                            ParameterizedTypeName.get(
-                                    ClassName.get(FieldProperty.class),
-                                    tType,
-                                    eType
-                            ),
-                            varName,
+            String fieldName = f.name;
+
+            FieldSpec fieldSpec = FieldSpec.builder(
+                            ParameterizedTypeName.get(fieldProperty, mainType, elemType),
+                            fieldName,
                             Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL
                     )
-                    .initializer("new $T($L, $T.class, $L)",
-                            FieldProperty.class,
-                            CONST,
-                            tType,
-                            f.elementType != null ? "$T.class" : "null"
-                    )
-                    .build());
+                    .initializer(buildFieldInit(fieldProperty, fieldName, mainType, elemType, f.isCollection))
+                    .build();
 
-            fieldNames.add(varName);
+            clazz.addField(fieldSpec);
+
+            fieldRefs.add(CodeBlock.of("$L", fieldName));
         }
 
         // =========================
         // ALL_FIELDS
         // =========================
-        clazz.addField(FieldSpec.builder(
-                        ParameterizedTypeName.get(
-                                ClassName.get(List.class),
-                                ParameterizedTypeName.get(
-                                        ClassName.get(FieldProperty.class),
-                                        WildcardTypeName.subtypeOf(Object.class),
-                                        WildcardTypeName.subtypeOf(Object.class)
-                                )
-                        ),
-                        "ALL_FIELDS",
-                        Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL
-                )
-                .initializer("List.of(" + String.join(",", fieldNames) + ")")
+        TypeName listOfFields = ParameterizedTypeName.get(
+                ClassName.get(List.class),
+                WildcardTypeName.subtypeOf(ParameterizedTypeName.get(
+                        fieldProperty,
+                        WildcardTypeName.subtypeOf(Object.class),
+                        WildcardTypeName.subtypeOf(Object.class)
+                ))
+        );
+
+        clazz.addField(FieldSpec.builder(listOfFields, "ALL_FIELDS",
+                        Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL)
+                .initializer("List.of($L)", CodeBlock.join(fieldRefs, ", "))
                 .build());
 
         // =========================
-        // getType()
+        // getType
         // =========================
         MethodSpec.Builder getType = MethodSpec.methodBuilder("getType")
                 .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
-                .returns(ParameterizedTypeName.get(ClassName.get(Class.class),
-                        WildcardTypeName.subtypeOf(Object.class)))
+                .returns(Class.class)
                 .addParameter(String.class, "name");
 
-        getType.beginControlFlow("switch(name)");
-
-        for (FieldInfo f : fields) {
-            getType.addStatement("case $S -> { return $T.class; }",
+        getType.beginControlFlow("return switch(name)");
+        for (FieldMeta f : fields) {
+            getType.addCode("case $S -> $T.class;\n",
                     f.name, TypeName.get(f.type));
         }
-
-        getType.addStatement("default -> throw new IllegalArgumentException($S + name)", "Unknown field: ");
+        getType.addCode("default -> throw new IllegalArgumentException(\"Unknown field: \" + name);\n");
         getType.endControlFlow();
 
         clazz.addMethod(getType.build());
 
         // =========================
-        // getProperty(obj)
+        // getFieldMap
         // =========================
-        MethodSpec.Builder getProperty = MethodSpec.methodBuilder("getProperty")
-                .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
-                .returns(ParameterizedTypeName.get(
-                        ClassName.get(List.class),
-                        ParameterizedTypeName.get(
-                                ClassName.get(FieldProperty.class),
-                                WildcardTypeName.subtypeOf(Object.class),
-                                WildcardTypeName.subtypeOf(Object.class)
-                        )
-                ))
-                .addParameter(ClassName.get(typeElement), "obj");
+        TypeName mapType = ParameterizedTypeName.get(
+                ClassName.get(Map.class),
+                ClassName.get(String.class),
+                ClassName.get(Object.class)
+        );
 
-        getProperty.beginControlFlow("if (obj == null)");
-        getProperty.addStatement("return List.of()");
-        getProperty.endControlFlow();
-
-        getProperty.addStatement("$T list = new $T<>()", List.class, ArrayList.class);
-
-        for (FieldInfo f : fields) {
-
-            String getter = resolveGetter(f);
-
-            if (f.primitive) {
-                getProperty.addStatement("list.add($L)", f.name);
-            } else {
-                getProperty.beginControlFlow("if (obj.$L() != null)", getter);
-                getProperty.addStatement("list.add($L)", f.name);
-                getProperty.endControlFlow();
-            }
-        }
-
-        getProperty.addStatement("return list");
-        clazz.addMethod(getProperty.build());
-
-        // =========================
-        // getFieldMap()
-        // =========================
         MethodSpec.Builder mapMethod = MethodSpec.methodBuilder("getFieldMap")
                 .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
-                .returns(ParameterizedTypeName.get(
-                        ClassName.get(Map.class),
-                        ClassName.get(String.class),
-                        ClassName.get(Object.class)
-                ))
-                .addParameter(ClassName.get(typeElement), "obj");
+                .returns(mapType)
+                .addParameter(TypeName.get(type.asType()), "obj");
 
-        mapMethod.beginControlFlow("if (obj == null)");
-        mapMethod.addStatement("return Map.of()");
-        mapMethod.endControlFlow();
+        mapMethod.beginControlFlow("if (obj == null)")
+                .addStatement("return Map.of()")
+                .endControlFlow();
 
         mapMethod.addStatement("$T map = new $T<>()", Map.class, HashMap.class);
 
-        for (FieldInfo f : fields) {
+        for (FieldMeta f : fields) {
 
-            String getter = resolveGetter(f);
+            String getter = getterName(f);
 
-            if (f.primitive) {
+            if (f.isPrimitive) {
                 mapMethod.addStatement("map.put($S, obj.$L())", f.name, getter);
             } else {
-                mapMethod.beginControlFlow("if (obj.$L() != null)", getter);
-                mapMethod.addStatement("map.put($S, obj.$L())", f.name, getter);
-                mapMethod.endControlFlow();
+                mapMethod.beginControlFlow("if (obj.$L() != null)", getter)
+                        .addStatement("map.put($S, obj.$L())", f.name, getter)
+                        .endControlFlow();
             }
         }
 
         mapMethod.addStatement("return map");
+
         clazz.addMethod(mapMethod.build());
 
-        // =========================
-        // WRITE FILE
-        // =========================
-        JavaFile.builder(packageName, clazz.build())
+        JavaFile.builder(pkg, clazz.build())
                 .build()
                 .writeTo(processingEnv.getFiler());
     }
 
     // =========================
+    // FIELD INIT BUILDER
+    // =========================
+    private CodeBlock buildFieldInit(
+            ClassName fieldProperty,
+            String name,
+            TypeName mainType,
+            TypeName elemType,
+            boolean isCollection
+    ) {
+        if (isCollection) {
+            return CodeBlock.of(
+                    "new $T<>($S, $T.class, $T.class)",
+                    fieldProperty,
+                    name,
+                    mainType,
+                    elemType
+            );
+        } else {
+            return CodeBlock.of(
+                    "new $T<>($S, $T.class, null)",
+                    fieldProperty,
+                    name,
+                    mainType
+            );
+        }
+    }
+
+    // =========================
+    // GETTER NAME SAFE
+    // =========================
+    private String getterName(FieldMeta f) {
+        String n = f.name;
+        if (f.type.getKind() == TypeKind.BOOLEAN) {
+            return "is" + capitalize(n);
+        }
+        return "get" + capitalize(n);
+    }
+
+    private String capitalize(String s) {
+        return Character.toUpperCase(s.charAt(0)) + s.substring(1);
+    }
+
+    // =========================
     // FIELD EXTRACTION
     // =========================
-    private List<FieldInfo> extractFields(TypeElement typeElement, boolean isRecord) {
+    private List<FieldMeta> extractFields(TypeElement type) {
 
-        List<FieldInfo> fields = new ArrayList<>();
+        List<FieldMeta> list = new ArrayList<>();
 
-        if (isRecord) {
-            for (RecordComponentElement r : typeElement.getRecordComponents()) {
-                fields.add(createField(r.getSimpleName().toString(), r.asType()));
-            }
-        } else {
-            for (Element e : typeElement.getEnclosedElements()) {
+        for (Element e : type.getEnclosedElements()) {
 
-                if (e.getKind() != ElementKind.FIELD) continue;
+            if (e.getKind() != ElementKind.FIELD) continue;
+            if (e.getModifiers().contains(Modifier.STATIC)) continue;
 
-                VariableElement v = (VariableElement) e;
-                if (v.getModifiers().contains(Modifier.STATIC)) continue;
+            VariableElement v = (VariableElement) e;
 
-                fields.add(createField(v.getSimpleName().toString(), v.asType()));
-            }
+            list.add(new FieldMeta(v));
         }
 
-        return fields;
+        return list;
     }
 
     // =========================
-    // FIELD INFO CREATION
+    // META MODEL
     // =========================
-    private FieldInfo createField(String name, TypeMirror mirror) {
+    static class FieldMeta {
 
-        boolean isCollection = isCollection(mirror);
-
-        TypeMirror elementType = null;
-
-        if (isCollection && mirror instanceof DeclaredType dt && !dt.getTypeArguments().isEmpty()) {
-            elementType = dt.getTypeArguments().get(0);
-        }
-
-        return new FieldInfo(
-                name,
-                mirror,
-                elementType,
-                mirror.getKind().isPrimitive()
-        );
-    }
-
-    private boolean isCollection(TypeMirror mirror) {
-        String name = mirror.toString();
-        return name.startsWith("java.util.List")
-                || name.startsWith("java.util.Set")
-                || name.startsWith("java.util.Collection");
-    }
-
-    private String resolveGetter(FieldInfo f) {
-        String cap = Character.toUpperCase(f.name.charAt(0)) + f.name.substring(1);
-
-        if (f.type.toString().equals("boolean")) {
-            return "is" + cap;
-        }
-        return "get" + cap;
-    }
-
-    private String toConstName(String name) {
-        return name.toUpperCase();
-    }
-
-    // =========================
-    // MODEL
-    // =========================
-    static class FieldInfo {
         String name;
         TypeMirror type;
         TypeMirror elementType;
-        boolean primitive;
+        boolean isPrimitive;
+        boolean isCollection;
 
-        FieldInfo(String name, TypeMirror type, TypeMirror elementType, boolean primitive) {
-            this.name = name;
-            this.type = type;
-            this.elementType = elementType;
-            this.primitive = primitive;
+        FieldMeta(VariableElement v) {
+            this.name = v.getSimpleName().toString();
+            this.type = v.asType();
+
+            this.isPrimitive = type.getKind().isPrimitive();
+            this.isCollection = isCollection(type);
+
+            this.elementType = extractElementType(type);
+        }
+
+        private boolean isCollection(TypeMirror t) {
+            String s = t.toString();
+            return s.startsWith("java.util.List")
+                    || s.startsWith("java.util.Set")
+                    || s.startsWith("java.util.Collection");
+        }
+
+        private TypeMirror extractElementType(TypeMirror t) {
+            if (t instanceof DeclaredType dt &&
+                    !dt.getTypeArguments().isEmpty()) {
+                return dt.getTypeArguments().get(0);
+            }
+            return null;
         }
     }
 }
