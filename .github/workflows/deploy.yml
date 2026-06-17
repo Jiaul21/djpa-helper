@@ -30,14 +30,14 @@ jobs:
 
 
 #               ----- release way -----
-#   update version in pom.xml as <version>1.0.0</version>
+#   update version in pom.xml as <version>1.0.1</version>
 
 
           #Test release
 #  git add .
-#  git commit -m "test release v1.0.0-beta : autoconfiguration, artifactId, groupId"
-#  git tag v1.0.0-beta
-#  git push origin v1.0.0-beta
+#  git commit -m "test release v1.0.1-beta : not contain, not in, not between operation"
+#  git tag v1.0.1-beta
+#  git push origin v1.0.1-beta
 #  git push origin main
 
 

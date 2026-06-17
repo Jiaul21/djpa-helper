@@ -6,7 +6,7 @@
 
     <groupId>io.github.jiaul21</groupId>
     <artifactId>djpa-spring-boot-starter</artifactId>
-    <version>1.0.0-beta</version>
+    <version>1.0.1-beta</version>
     <packaging>jar</packaging>
 
     <name>djpa-generic-helper</name>

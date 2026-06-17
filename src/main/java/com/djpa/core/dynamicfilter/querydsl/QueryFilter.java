@@ -48,6 +48,7 @@ public class QueryFilter {
             case EQUAL -> eq(values.get(0), path);
             case NOT_EQUAL -> neq(values.get(0), path);
             case CONTAINS -> contains(values.get(0), path);
+            case NOT_CONTAINS -> notContains(values.get(0), path);
             case STARTS_WITH -> startsWith(values.get(0), path);
             case ENDS_WITH -> endsWith(values.get(0), path);
             case GREATER_THAN -> gt(values.get(0), path);
@@ -55,7 +56,9 @@ public class QueryFilter {
             case LESS_THAN -> lt(values.get(0), path);
             case LESS_THAN_EQUAL -> lte(values.get(0), path);
             case BETWEEN -> between(values.get(0), values.get(1), path);
+            case NOT_BETWEEN -> notBetween(values.get(0), values.get(1), path);
             case IN -> in(values, path);
+            case NOT_IN -> notIn(values, path);
             default -> null;
         };
     }
@@ -78,6 +81,10 @@ public class QueryFilter {
         return asStringExpression(path).containsIgnoreCase(value);
     }
 
+    private static Predicate notContains(String value, SimpleExpression<?> path) {
+        return path.isNull().or(contains(value,path).not());
+    }
+
     private static Predicate startsWith(String value, SimpleExpression<?> path) {
         return asStringExpression(path).startsWithIgnoreCase(value);
     }
@@ -93,8 +100,16 @@ public class QueryFilter {
                 Expressions.constant(Converter.convert(val2, path.getType())));
     }
 
+    private static Predicate notBetween(String val1, String val2, SimpleExpression<?> path) {
+        return path.isNull().or(between(val1,val2,path).not());
+    }
+
     private static Predicate in(List<String> values, SimpleExpression<?> path) {
         return inExpression(path, values.stream().map(value -> Converter.convert(value, path.getType())).toList());
+    }
+
+    private static Predicate notIn(List<String> values, SimpleExpression<?> path) {
+        return path.isNull().or(in(values,path).not());
     }
 
     private static Predicate gt(String v, SimpleExpression<?> path) {
